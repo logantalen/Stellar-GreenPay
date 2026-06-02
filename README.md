@@ -108,6 +108,8 @@ ALLOWED_ORIGINS=http://localhost:3000
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). All skill levels welcome!
 
+Please note that this project is governed by a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you agree to uphold its terms.
+
 ## 🗺 Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned features.

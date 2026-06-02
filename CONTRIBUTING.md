@@ -1,5 +1,7 @@
 # Contributing to GreenPay
 
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
+
 ## Getting started
 
 1. Fork and clone the repo.
