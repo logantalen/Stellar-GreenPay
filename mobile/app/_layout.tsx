@@ -19,6 +19,9 @@ export default function RootLayout() {
         <Stack.Screen name="projects/[id]" options={{ title: 'Project Details' }} />
         <Stack.Screen name="donate/[id]" options={{ title: 'Donate' }} />
         <Stack.Screen name="impact" options={{ title: 'My Impact' }} />
+        <Stack.Screen name="profile/[address]" options={{ title: 'Donor Profile' }} />
+        <Stack.Screen name="leaderboard" options={{ title: 'Leaderboard' }} />
+        <Stack.Screen name="recurring" options={{ title: 'Monthly Giving' }} />
       </Stack>
     </>
   );

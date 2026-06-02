@@ -35,6 +35,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+app.set("io", io);
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 150, standardHeaders: true, legacyHeaders: false }));
 
 app.use("/health",        require("./routes/health"));
