@@ -6,6 +6,7 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-nati
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 
@@ -29,10 +30,43 @@ export default function ProjectDetailScreen() {
   const { id } = useLocalSearchParams();
   const [project, setProject] = useState<ClimateProject | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [pushToken, setPushToken] = useState<string | null>(null);
+  const [followLoading, setFollowLoading] = useState(false);
 
   useEffect(() => {
-    if (id) loadProject(id as string);
+    if (id) {
+      loadProject(id as string);
+      initializeNotifications();
+    }
   }, [id]);
+
+  const initializeNotifications = async () => {
+    try {
+      const token = await getPushToken();
+      if (token) {
+        setPushToken(token);
+        // Check if already following this project
+        checkFollowStatus(id as string, token);
+      }
+    } catch (error) {
+      console.error('Error initializing notifications:', error);
+    }
+  };
+
+  const checkFollowStatus = async (projectId: string, token: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
+      const data = await response.json();
+      if (data.success) {
+        const followedProjects = data.data;
+        const isFollowed = followedProjects.some((p: any) => p.id === projectId);
+        setIsFollowing(isFollowed);
+      }
+    } catch (error) {
+      console.error('Error checking follow status:', error);
+    }
+  };
 
   const loadProject = async (projectId: string) => {
     try {
@@ -42,6 +76,25 @@ export default function ProjectDetailScreen() {
       console.error('Error loading project:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleToggleFollow = async () => {
+    if (!pushToken || !project) return;
+
+    setFollowLoading(true);
+    try {
+      if (isFollowing) {
+        await unfollowProject(project.id, pushToken);
+        setIsFollowing(false);
+      } else {
+        await followProject(project.id, pushToken);
+        setIsFollowing(true);
+      }
+    } catch (error) {
+      console.error('Error toggling follow:', error);
+    } finally {
+      setFollowLoading(false);
     }
   };
 
@@ -115,6 +168,18 @@ export default function ProjectDetailScreen() {
         <Text style={styles.sectionTitle}>About this project</Text>
         <Text style={styles.description}>{project.description}</Text>
       </View>
+
+      {pushToken && (
+        <TouchableOpacity
+          style={[styles.followButton, isFollowing && styles.followButtonActive]}
+          onPress={handleToggleFollow}
+          disabled={followLoading}
+        >
+          <Text style={styles.followButtonText}>
+            {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
+          </Text>
+        </TouchableOpacity>
+      )}
 
       <TouchableOpacity
         style={styles.donateButton}
@@ -252,6 +317,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#5a7a5a',
     lineHeight: 20,
+  },
+  followButton: {
+    backgroundColor: '#fff',
+    padding: 16,
+    margin: 16,
+    marginTop: 0,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#227239',
+  },
+  followButtonActive: {
+    backgroundColor: '#227239',
+  },
+  followButtonText: {
+    color: '#227239',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   donateButton: {
     backgroundColor: '#227239',
