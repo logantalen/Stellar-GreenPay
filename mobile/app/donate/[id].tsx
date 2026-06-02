@@ -7,6 +7,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Linking } from 'expo-linking';
+import { authenticate } from '../../hooks/useBiometricAuth';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
@@ -48,6 +49,12 @@ export default function DonateScreen() {
 
     if (!publicKey) {
       Alert.alert('Wallet Required', 'Please connect your Stellar wallet first');
+      return;
+    }
+
+    const confirmed = await authenticate('Confirm donation with biometrics or PIN');
+    if (!confirmed) {
+      Alert.alert('Authentication Required', 'You must authenticate to sign a transaction');
       return;
     }
 
