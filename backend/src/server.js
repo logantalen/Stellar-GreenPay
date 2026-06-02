@@ -4,7 +4,6 @@
 "use strict";
 
 const express   = require("express");
-const cors      = require("cors");
 const helmet    = require("helmet");
 const morgan    = require("morgan");
 const rateLimit = require("express-rate-limit");
@@ -14,6 +13,7 @@ const { startTurretsServer } = require("./services/turrets");
 const http = require("http");
 const { Server } = require("socket.io");
 const { startIndexer } = require("./services/indexerService");
+const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPolicy");
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -23,16 +23,14 @@ app.use(helmet());
 app.use(morgan("dev"));
 app.use(express.json({ limit: "20kb" }));
 
-const origins = (process.env.ALLOWED_ORIGINS || "http://localhost:3000").split(",").map(o => o.trim());
-app.use(cors({
-  origin: (origin, cb) => (!origin || origins.includes(origin)) ? cb(null, true) : cb(new Error("CORS blocked")),
-  methods: ["GET", "POST", "PATCH"],
-}));
+const origins = getAllowedOrigins();
+app.use(...createCorsMiddleware(origins));
 
 const io = new Server(server, {
   cors: {
     origin: origins,
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST"],
+    credentials: false,
   }
 });
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 150, standardHeaders: true, legacyHeaders: false }));
@@ -51,6 +49,7 @@ app.use("/api/ratings",        require("./routes/ratings"));
 
 app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} not found` }));
 app.use((err, req, res, next) => {
+  void next;
   console.error("[Error]", err.message);
   res.status(err.status || 500).json({ error: err.message || "Internal server error" });
 });
