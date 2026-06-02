@@ -465,3 +465,37 @@ export async function fetchImpactDonor(publicKey: string): Promise<ImpactDonorSt
   );
   return data.data;
 }
+
+export interface SubmitProjectPayload {
+  name: string;
+  category: string;
+  description: string;
+  location: string;
+  goalXLM: string;
+  walletAddress: string;
+  organization: {
+    name: string;
+    website: string;
+    country: string;
+    contactEmail: string;
+  };
+  co2Methodology: {
+    name: string;
+    verificationBody: string;
+    annualTonnesCO2: string;
+    documentUrl: string;
+  };
+}
+
+export interface SubmitProjectResponse {
+  id: string;
+  reviewTimeline: string;
+}
+
+export async function submitProject(payload: SubmitProjectPayload): Promise<SubmitProjectResponse> {
+  const { data } = await api.post<{ success: boolean; data: SubmitProjectResponse }>(
+    "/api/projects",
+    payload,
+  );
+  return data.data;
+}
