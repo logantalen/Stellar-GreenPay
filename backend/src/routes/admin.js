@@ -22,19 +22,22 @@ router.get("/audit", async (req, res, next) => {
     values.push(Math.min(Number.parseInt(limit, 10) || 50, 200));
     values.push(Math.max(Number.parseInt(offset, 10) || 0, 0));
 
-    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const result = await pool.query(
-      `SELECT id, actor, action, target_type, target_id, metadata, ip_address, created_at
-       FROM admin_audit_log ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT $${values.length - 1} OFFSET $${values.length}`,
-      values,
-    );
+    let query = `
+      SELECT id, actor, action, target_type, target_id, metadata, ip_address, created_at
+      FROM admin_audit_log
+    `;
+    if (where.length) {
+      query += " WHERE " + where.join(" AND ");
+    }
+    query += " ORDER BY created_at DESC LIMIT $" + (values.length - 1) + " OFFSET $" + values.length;
 
-    const countResult = await pool.query(
-      `SELECT COUNT(*) AS total FROM admin_audit_log ${whereClause}`,
-      values.slice(0, -2),
-    );
+    const result = await pool.query(query, values);
+
+    let countQuery = "SELECT COUNT(*) AS total FROM admin_audit_log";
+    if (where.length) {
+      countQuery += " WHERE " + where.join(" AND ");
+    }
+    const countResult = await pool.query(countQuery, values.slice(0, -2));
 
     const rows = result.rows.map(row => ({
       id: row.id,
