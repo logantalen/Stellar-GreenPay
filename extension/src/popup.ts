@@ -6,9 +6,25 @@ import {
   Operation,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
+import { loadSettings, type ExtensionSettings } from './settings';
 
-const HORIZON_URL = 'https://horizon-testnet.stellar.org';
-const server = new Horizon.Server(HORIZON_URL);
+// Module-level vars updated from settings before any network call
+let API_BASE = 'https://api.stellar-greenpay.app';
+let NETWORK_PASSPHRASE: string = Networks.TESTNET;
+let horizonUrl = 'https://horizon-testnet.stellar.org';
+let server = new Horizon.Server(horizonUrl);
+
+function applySettings(settings: ExtensionSettings) {
+  API_BASE = settings.backendUrl;
+  if (settings.network === 'mainnet') {
+    NETWORK_PASSPHRASE = Networks.PUBLIC;
+    horizonUrl = 'https://horizon.stellar.org';
+  } else {
+    NETWORK_PASSPHRASE = Networks.TESTNET;
+    horizonUrl = 'https://horizon-testnet.stellar.org';
+  }
+  server = new Horizon.Server(horizonUrl);
+}
 
 interface DonationParams {
   destinationAddress: string;
@@ -24,7 +40,7 @@ async function buildDonationTransaction(
 
   const builder = new TransactionBuilder(account, {
     fee: (await server.fetchBaseFee()).toString(),
-    networkPassphrase: Networks.TESTNET,
+    networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(
       Operation.payment({
@@ -47,20 +63,18 @@ async function signWithFreighter(xdr: string): Promise<string> {
   if (!freighter) throw new Error('Freighter extension not found');
 
   const signedXdr: string = await freighter.signTransaction(xdr, {
-    networkPassphrase: Networks.TESTNET,
+    networkPassphrase: NETWORK_PASSPHRASE,
   });
   return signedXdr;
 }
 
 async function submitTransaction(signedXdr: string): Promise<string> {
-  const tx = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
+  const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
   const result = await server.submitTransaction(tx as any);
   return (result as any).hash;
 }
 
 // --- Project search autocomplete ---
-
-const API_BASE = 'https://api.stellar-greenpay.app';
 
 interface ProjectResult {
   id: string;
@@ -147,7 +161,7 @@ function initProjectSearch() {
 
   input.addEventListener('input', () => {
     const q = input.value.trim();
-    selectedProjectId = null; // user is typing a new search, clear prior selection
+    selectedProjectId = null;
     if (q.length < 2) {
       dropdown.classList.add('hidden');
       return;
@@ -194,7 +208,6 @@ async function recordDonation(params: {
   transactionHash: string;
   message?: string;
 }): Promise<void> {
-  // 4 attempts with increasing delays: immediate, 500 ms, 1 000 ms, 2 000 ms
   const delays = [0, 500, 1000, 2000];
   let lastError: Error | null = null;
 
@@ -207,13 +220,11 @@ async function recordDonation(params: {
         body: JSON.stringify(params),
       });
       if (res.ok) return;
-      // 4xx = client error (bad data); retrying won't help
       if (res.status >= 400 && res.status < 500) {
         throw new Error(`HTTP ${res.status}`);
       }
       lastError = new Error(`HTTP ${res.status}`);
     } catch (err: any) {
-      // Re-throw immediately on client errors
       if (err.message?.startsWith('HTTP 4')) throw err;
       lastError = err;
     }
@@ -239,7 +250,27 @@ function setLoading(loading: boolean) {
   btn.textContent = loading ? 'Processing…' : 'Donate';
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+function renderNetworkBadge(network: 'testnet' | 'mainnet') {
+  const badge = document.getElementById('network-badge');
+  if (!badge) return;
+  badge.textContent = network === 'mainnet' ? 'Mainnet' : 'Testnet';
+  badge.className = `network-badge ${network === 'mainnet' ? 'network-badge-mainnet' : 'network-badge-testnet'}`;
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  // Load and apply settings before anything else
+  const settings = await loadSettings();
+  applySettings(settings);
+  renderNetworkBadge(settings.network);
+
+  // Wire settings button
+  const settingsBtn = document.getElementById('settings-btn');
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+      window.location.href = 'settings.html';
+    });
+  }
+
   initProjectSearch();
 
   const form = document.getElementById('donation-form');
@@ -271,10 +302,10 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('Waiting for Freighter signature…');
       const signedXdr = await signWithFreighter(xdr);
 
-      setStatus('Submitting to Horizon testnet…');
+      const networkLabel = settings.network === 'mainnet' ? 'Mainnet' : 'Testnet';
+      setStatus(`Submitting to Horizon ${networkLabel}…`);
       const txHash = await submitTransaction(signedXdr);
 
-      // Capture and reset before the async recording call to prevent double-submit
       const capturedProjectId = selectedProjectId;
       selectedProjectId = null;
 
@@ -291,7 +322,6 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           setStatus(`Donation successful! TX: ${txHash.slice(0, 12)}… (recorded)`);
         } catch {
-          // The Stellar tx succeeded — don't fail the UX because recording failed
           setStatus(`Donation successful! TX: ${txHash.slice(0, 12)}… (record failed, tx succeeded)`);
         }
       } else {
