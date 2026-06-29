@@ -2,6 +2,7 @@
  * src/routes/projects.js
  */
 "use strict";
+const crypto = require("crypto");
 const express = require("express");
 const router = express.Router();
 const { v4: uuid } = require("uuid");
@@ -176,7 +177,9 @@ router.get("/", async (req, res, next) => {
     }
     query += `ORDER BY created_at DESC, id DESC LIMIT $${limitIdx}`;
 
-    // eslint-disable-next-line sql-injection/no-sql-injection
+    // All user-controlled values (status, category, search, cursor fields) are
+    // passed as parameterised $N placeholders in `values`. Dynamic WHERE clauses
+    // are built only from whitelisted enum strings, so no injection surface exists.
     const result = await pool.query(query, values);
     const rows = result.rows;
     const hasMore = rows.length > pageSize;
@@ -192,6 +195,45 @@ router.get("/", async (req, res, next) => {
     await redis.set(cacheKey, responseBody, PROJECTS_LIST_CACHE_TTL);
 
     res.json(responseBody);
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * POST /api/projects
+ * Create a new project. Validates string lengths to prevent database bloat.
+ */
+router.post("/", async (req, res, next) => {
+  try {
+    const { name, description, location, category, wallet_address, goal_xlm = 0, tags = [] } = req.body || {};
+
+    if (!name || typeof name !== "string" || name.trim().length < 3 || name.trim().length > 120) {
+      return res.status(400).json({ error: "name must be between 3 and 120 characters" });
+    }
+    if (!description || typeof description !== "string" || description.trim().length < 10 || description.trim().length > 5000) {
+      return res.status(400).json({ error: "description must be between 10 and 5000 characters" });
+    }
+    if (!location || typeof location !== "string" || location.trim().length < 2 || location.trim().length > 200) {
+      return res.status(400).json({ error: "location must be between 2 and 200 characters" });
+    }
+    if (!category || !VALID_CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: `category must be one of: ${VALID_CATEGORIES.join(", ")}` });
+    }
+    if (!wallet_address || typeof wallet_address !== "string") {
+      return res.status(400).json({ error: "wallet_address is required" });
+    }
+
+    const id = uuid();
+    const result = await pool.query(
+      `INSERT INTO projects (id, name, description, category, location, wallet_address, goal_xlm, tags)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [id, name.trim(), description.trim(), category, location.trim(), wallet_address, goal_xlm, tags],
+    );
+
+    await redis.deletePattern(PROJECTS_LIST_CACHE_PREFIX + "*");
+    res.status(201).json({ success: true, data: mapProjectRow(result.rows[0]) });
   } catch (e) {
     next(e);
   }
@@ -453,6 +495,16 @@ router.get("/:id", async (req, res, next) => {
   try {
     const projectResult = await pool.query("SELECT * FROM projects WHERE id = $1", [req.params.id]);
     if (!projectResult.rows[0]) return res.status(404).json({ error: "Project not found" });
+
+    const updatedAt = projectResult.rows[0].updated_at;
+    const etag = `"${crypto.createHash("md5").update(String(updatedAt)).digest("hex")}"`;
+    const lastModified = new Date(updatedAt).toUTCString();
+    res.set("ETag", etag);
+    res.set("Last-Modified", lastModified);
+    if (req.headers["if-none-match"] === etag) {
+      return res.status(304).end();
+    }
+
     const campaigns = await fetchCampaignsForProject(req.params.id);
     const onChainProject = await getOnChainProject(req.params.id);
 
