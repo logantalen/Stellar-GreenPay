@@ -4,14 +4,27 @@
  */
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useColorScheme } from 'react-native';
+import { ThemeProvider, themes } from './theme';
+import { useDeepLink } from '../hooks/useDeepLink';
+
+function DeepLinkHandler() {
+  useDeepLink();
+  return null;
+}
 
 export default function RootLayout() {
+  const colorScheme = useColorScheme();
+  const themeMode = colorScheme === 'dark' ? 'dark' : 'light';
+  const theme = themes[themeMode];
+
   return (
-    <>
-      <StatusBar style="light" />
+    <ThemeProvider>
+      <DeepLinkHandler />
+      <StatusBar style={theme.statusBarStyle} />
       <Stack screenOptions={{
-        headerStyle: { backgroundColor: '#227239' },
-        headerTintColor: '#fff',
+        headerStyle: { backgroundColor: theme.header },
+        headerTintColor: theme.headerText,
         headerTitleStyle: { fontFamily: 'Lora_700Bold' },
       }}>
         <Stack.Screen name="index" options={{ title: 'Home' }} />
@@ -23,6 +36,6 @@ export default function RootLayout() {
         <Stack.Screen name="leaderboard" options={{ title: 'Leaderboard' }} />
         <Stack.Screen name="recurring" options={{ title: 'Monthly Giving' }} />
       </Stack>
-    </>
+    </ThemeProvider>
   );
 }

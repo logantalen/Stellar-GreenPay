@@ -27,7 +27,7 @@ mod fuzz_tests;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    token, Address, Env, symbol_short, String,
+    token, Address, Env, symbol_short, Symbol, String, BytesN,
 };
 
 // ─── Badge tiers (on-chain) ───────────────────────────────────────────────────
@@ -65,6 +65,7 @@ pub struct DonationRecord {
     pub amount:       i128,
     pub ledger:       u32,
     pub message_hash: u32,
+    pub currency:     Symbol,  // "XLM" or "USDC"
 }
 
 #[contracttype]
@@ -112,6 +113,9 @@ pub enum DataKey {
     // Governance
     Proposal(String),
     HasVoted(String, Address),
+    // Contract upgrade and multi-currency support
+    ContractWasmHash,
+    USDCTokenAddress,
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -473,6 +477,135 @@ impl GreenPayContract {
         env.storage().instance()
             .get(&DataKey::Proposal(project_id)).expect("Proposal not found")
     }
+
+    /// Donate USDC. Converts to XLM-equivalent for global stats using a price oracle stub.
+    pub fn donate_usdc(
+        env:        Env,
+        usdc_token: Address,
+        donor:      Address,
+        project_id: String,
+        usdc_amount: i128,
+        msg_hash:   u32,
+    ) {
+        donor.require_auth();
+        if usdc_amount <= 0 { panic!("Donation amount must be positive"); }
+
+        let stored_usdc: Option<Address> = env.storage().instance()
+            .get(&DataKey::USDCTokenAddress);
+        if stored_usdc.is_none() || stored_usdc.unwrap() != usdc_token {
+            panic!("USDC token not configured");
+        }
+
+        // Simple price stub: assume 1 USDC ≈ 8 XLM for now
+        // In production, this would call a real price oracle
+        let xlm_equivalent = usdc_amount
+            .checked_mul(8).expect("USDC to XLM conversion overflow");
+
+        let mut project: Project = env.storage().instance()
+            .get(&DataKey::Project(project_id.clone())).expect("Project not found");
+        if !project.active { panic!("Project is not accepting donations"); }
+
+        // Pre-compute CO2 increment using XLM-equivalent
+        let xlm_units = xlm_equivalent / STROOP;
+        let co2_increment = xlm_units
+            .checked_mul(project.co2_per_xlm as i128)
+            .expect("CO2 calculation overflow");
+
+        let mut donor_stats: DonorStats = env.storage().instance()
+            .get(&DataKey::DonorStats(donor.clone()))
+            .unwrap_or(DonorStats { total_donated: 0, donation_count: 0,
+                badge: BadgeTier::None, co2_offset_grams: 0 });
+        let prev_badge = donor_stats.badge.clone();
+
+        // Update project and donor stats using XLM-equivalent
+        project.total_raised = project.total_raised
+            .checked_add(xlm_equivalent).expect("Project total_raised overflow");
+        let donated_key = DataKey::HasDonated(project_id.clone(), donor.clone());
+        if !env.storage().instance().has(&donated_key) {
+            env.storage().instance().set(&donated_key, &true);
+            project.donor_count = project.donor_count
+                .checked_add(1).expect("Project donor_count overflow");
+        }
+        env.storage().instance().set(&DataKey::Project(project_id.clone()), &project);
+
+        donor_stats.total_donated = donor_stats.total_donated
+            .checked_add(xlm_equivalent).expect("Donor total_donated overflow");
+        donor_stats.donation_count = donor_stats.donation_count
+            .checked_add(1).expect("Donor donation_count overflow");
+        donor_stats.co2_offset_grams = donor_stats.co2_offset_grams
+            .checked_add(co2_increment).expect("Donor co2_offset overflow");
+        donor_stats.badge = calculate_badge(donor_stats.total_donated);
+        env.storage().instance().set(&DataKey::DonorStats(donor.clone()), &donor_stats);
+
+        if donor_stats.badge != BadgeTier::None && donor_stats.badge != prev_badge {
+            let nft_key = DataKey::ImpactNFT(donor.clone(), donor_stats.badge.clone());
+            if !env.storage().instance().has(&nft_key) {
+                let nft = ImpactNFT {
+                    owner: donor.clone(),
+                    tier: donor_stats.badge.clone(),
+                    total_donated: donor_stats.total_donated,
+                    minted_at_ledger: env.ledger().sequence(),
+                };
+                env.storage().instance().set(&nft_key, &nft);
+                env.events().publish((symbol_short!("nft_mint"), donor.clone()), donor_stats.badge.clone());
+            }
+        }
+
+        let dc: u32 = env.storage().instance().get(&DataKey::DonationCount).unwrap_or(0);
+        let new_dc = dc.checked_add(1).expect("DonationCount overflow");
+        env.storage().instance().set(&DataKey::DonationCount, &new_dc);
+
+        let gr: i128 = env.storage().instance().get(&DataKey::GlobalTotalRaised).unwrap_or(0);
+        env.storage().instance().set(&DataKey::GlobalTotalRaised,
+            &gr.checked_add(xlm_equivalent).expect("GlobalTotalRaised overflow"));
+
+        let gg: i128 = env.storage().instance().get(&DataKey::GlobalCO2OffsetGrams).unwrap_or(0);
+        env.storage().instance().set(&DataKey::GlobalCO2OffsetGrams,
+            &gg.checked_add(co2_increment).expect("GlobalCO2OffsetGrams overflow"));
+
+        let token_client = token::Client::new(&env, &usdc_token);
+        let project_wallet = project.wallet;
+        token_client.transfer(&donor, &project_wallet, &usdc_amount);
+
+        env.events().publish((symbol_short!("donated"), donor.clone(), project_id), (usdc_amount, symbol_short!("USDC")));
+    }
+
+    /// Admin-only: Set the USDC token address for multi-currency donations.
+    pub fn set_usdc_token(env: Env, admin: Address, usdc_token: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin).expect("Not initialized");
+        if stored_admin != admin { panic!("Only admin can set USDC token"); }
+        env.storage().instance().set(&DataKey::USDCTokenAddress, &usdc_token);
+        env.events().publish((symbol_short!("usdc_set"),), usdc_token);
+    }
+
+    /// Get the configured USDC token address.
+    pub fn get_usdc_token(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::USDCTokenAddress)
+    }
+
+    /// Admin-only: Upgrade the contract to a new WASM code.
+    /// Preserves all on-chain state while replacing the contract implementation.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin).expect("Not initialized");
+        if stored_admin != admin { panic!("Only admin can upgrade"); }
+
+        // Store the new WASM hash for upgrade verification
+        env.storage().instance().set(&DataKey::ContractWasmHash, &new_wasm_hash);
+
+        // Execute the actual upgrade
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        env.events().publish((symbol_short!("upgrade"),), admin);
+    }
+
+    /// Get the current contract WASM hash.
+    pub fn get_contract_wasm_hash(env: Env) -> Option<BytesN<32>> {
+        env.storage().instance().get(&DataKey::ContractWasmHash)
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -802,5 +935,67 @@ mod tests {
     fn test_create_proposal_rejects_too_long_duration() {
         let (_env, _cid, client, admin, pid) = setup();
         client.create_proposal(&admin, &pid, &(MAX_VOTING_WINDOW_LEDGERS + 1));
+    }
+
+    /// Test that voting is rejected after the deadline has passed (issue #209).
+    #[test]
+    #[should_panic(expected = "Voting window has closed")]
+    fn test_vote_rejected_after_deadline() {
+        let (env, cid, client, admin, pid) = setup();
+        client.create_proposal(&admin, &pid, &0u32);
+
+        // Create a voter with badge
+        let voter = Address::generate(&env);
+        grant_badge(&env, &cid, &voter);
+
+        // Advance ledger past the deadline
+        extend_ttl(&env, &cid);
+        env.ledger().set_sequence_number(VOTING_WINDOW_LEDGERS + 2);
+
+        // Attempt to vote after deadline — should panic with "Voting window has closed"
+        client.vote_verify_project(&voter, &pid, &true);
+    }
+
+    /// Test that voting is allowed before the deadline (issue #209).
+    #[test]
+    fn test_vote_allowed_before_deadline() {
+        let (env, cid, client, admin, pid) = setup();
+        let start = env.ledger().sequence();
+        client.create_proposal(&admin, &pid, &0u32);
+
+        let voter = Address::generate(&env);
+        grant_badge(&env, &cid, &voter);
+
+        // Vote at ledger start + VOTING_WINDOW_LEDGERS - 1 (last valid ledger)
+        extend_ttl(&env, &cid);
+        env.ledger().set_sequence_number(start + VOTING_WINDOW_LEDGERS - 1);
+
+        // Should succeed
+        client.vote_verify_project(&voter, &pid, &true);
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.votes_for, 1);
+    }
+
+    /// Test minimum voting duration enforcement (issue #209).
+    #[test]
+    fn test_minimum_voting_duration_enforced() {
+        let (env, cid, client, admin, pid) = setup();
+        let custom_duration = MIN_VOTING_WINDOW_LEDGERS;
+        let start = env.ledger().sequence();
+
+        client.create_proposal(&admin, &pid, &custom_duration);
+
+        let voter = Address::generate(&env);
+        grant_badge(&env, &cid, &voter);
+
+        // Vote within the minimum window
+        extend_ttl(&env, &cid);
+        env.ledger().set_sequence_number(start + custom_duration - 1);
+
+        client.vote_verify_project(&voter, &pid, &true);
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.votes_for, 1);
     }
 }

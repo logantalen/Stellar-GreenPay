@@ -3,6 +3,8 @@
  */
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
+import Head from "next/head";
+import type { GetServerSideProps } from "next";
 import Link from "next/link";
 import DonateForm from "@/components/DonateForm";
 import DonationFeed from "@/components/DonationFeed";
@@ -27,11 +29,19 @@ import { useWishlist } from "@/hooks/useWishlist";
 interface ProjectDetailProps {
   publicKey: string | null;
   onConnect: (pk: string) => void;
+  ogProject?: {
+    name: string;
+    description: string;
+    imageUrl?: string;
+    category: string;
+    location: string;
+  } | null;
 }
 
 export default function ProjectDetail({
   publicKey,
   onConnect,
+  ogProject,
 }: ProjectDetailProps) {
   const router = useRouter();
   const { id } = router.query;
@@ -672,8 +682,29 @@ export default function ProjectDetail({
   else if (treesEquivalent < 50) analogy = "A growing mini-forest! 🌲";
   else analogy = "A massive impact for our planet! 🌍";
 
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://stellar-greenpay.app";
+  const ogTitle = ogProject ? `${ogProject.name} — Stellar GreenPay` : "Stellar GreenPay";
+  const ogDescription = ogProject
+    ? `${ogProject.description.slice(0, 160).trimEnd()}… Support this ${ogProject.category} project on Stellar GreenPay.`
+    : "Donate XLM directly to verified climate projects on Stellar.";
+  const ogImage = ogProject?.imageUrl || `${appUrl}/og-default.png`;
+
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 pb-24 sm:pb-10 animate-fade-in">
+      <Head>
+        <title>{ogTitle}</title>
+        <meta name="description" content={ogDescription} />
+        <meta property="og:type" content="website" />
+        <meta property="og:title" content={ogTitle} />
+        <meta property="og:description" content={ogDescription} />
+        <meta property="og:image" content={ogImage} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={ogTitle} />
+        <meta name="twitter:description" content={ogDescription} />
+        <meta name="twitter:image" content={ogImage} />
+      </Head>
       <ToastNotification
         toasts={toasts}
         onDismiss={(toastId) => setToasts((prev) => prev.filter((t) => t.id !== toastId))}
@@ -1613,6 +1644,31 @@ export default function ProjectDetail({
     </div>
   );
 }
+
+export const getServerSideProps: GetServerSideProps = async (context) => {
+  const { id } = context.params as { id: string };
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
+  try {
+    const res = await fetch(`${apiUrl}/api/projects/${encodeURIComponent(id)}`);
+    if (!res.ok) return { props: { ogProject: null } };
+    const body = await res.json();
+    const p = body.data;
+    return {
+      props: {
+        ogProject: {
+          name: p.name ?? "",
+          description: p.description ?? "",
+          imageUrl: p.imageUrl ?? null,
+          category: p.category ?? "",
+          location: p.location ?? "",
+        },
+      },
+    };
+  } catch {
+    return { props: { ogProject: null } };
+  }
+};
 
 /** Simple markdown-to-HTML: bold, italic, links, line breaks. */
 function renderMarkdown(text: string): string {
